@@ -3,6 +3,7 @@ import { allocateMemory, deallocateMemory, suggestStrategy } from "./services/ap
 import { motion, AnimatePresence } from "framer-motion";
 import MemoryChart from "./components/MemoryChart";
 import "./index.css";
+import { useNavigate } from "react-router-dom";
 
 interface Block {
   label: string;
@@ -18,66 +19,121 @@ function App() {
   const [realtimeConnected, setRealtimeConnected] = useState(false);
 
   const socketRef = useRef<WebSocket | null>(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
-    const socket = new WebSocket("ws://localhost:8000/ws");
-    socketRef.current = socket;
-
-    socket.onopen = () => {
-      console.log("✅ WebSocket connected");
-      setRealtimeConnected(true);
+    if (socketRef.current) return; // Prevent multiple connections
+  
+    let socket: WebSocket | null = null;
+    let reconnectTimeout: NodeJS.Timeout | null = null;
+    let reconnectAttempts = 0;
+  
+    const connectWebSocket = () => {
+      console.log("🌐 Attempting WebSocket connection...");
+      socket = new WebSocket("ws://127.0.0.1:8000/ws");
+      socketRef.current = socket;
+  
+      socket.onopen = () => {
+        console.log("✅ WebSocket connected");
+        setRealtimeConnected(true);
+        reconnectAttempts = 0;
+        socket?.send("ping"); // Keep-alive or handshake
+      };
+  
+      socket.onmessage = (event) => {
+        try {
+          const memoryData = JSON.parse(event.data);
+          if (Array.isArray(memoryData.memory)) {
+            setBlocks(parseMemory(memoryData.memory));
+          } else {
+            console.error("Unexpected WebSocket format:", memoryData);
+          }
+        } catch (err) {
+          console.error("Error parsing WebSocket message:", err);
+        }
+      };
+  
+      socket.onerror = (err) => {
+        console.error("❌ WebSocket error:", err);
+      };
+  
+      socket.onclose = () => {
+        console.warn("⚠️ WebSocket disconnected");
+        setRealtimeConnected(false);
+  
+        if (reconnectAttempts < 5) {
+          const timeout = Math.min(10000, 1000 * 2 ** reconnectAttempts);
+          reconnectAttempts++;
+          reconnectTimeout = setTimeout(connectWebSocket, timeout);
+        } else {
+          console.error("🚫 Max reconnect attempts reached. WebSocket not reconnecting.");
+        }
+      };
     };
-
-    socket.onmessage = (event) => {
-      const memoryData = JSON.parse(event.data);
-      setBlocks(parseMemory(memoryData));
+  
+    connectWebSocket();
+  
+    return () => {
+      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      socket?.close();
+      socketRef.current = null;
     };
-
-    socket.onerror = (err) => {
-      console.error("WebSocket error:", err);
-    };
-
-    socket.onclose = () => {
-      console.warn("❌ WebSocket disconnected");
-      setRealtimeConnected(false);
-    };
-
-    return () => socket.close();
   }, []);
-
+  
   const parseMemory = (mem: string[]): Block[] => {
     return mem.map((blockStr) => {
       const parts = blockStr.split(' ');
       const [start, end] = parts[0].replace('[', '').replace(']', '').split('-').map(Number);
       const size = end - start + 1;
       const isFree = parts[1] === "Free";
-      const color = isFree ? 'gray' : 'blue';
+      const color = isFree ? '#6ee7b7' : '#3b82f6';
       return {
         label: blockStr,
         value: size,
-        color
+        color,
       };
     });
   };
 
   const handleAllocate = async () => {
+    if (!pid.trim()) {
+      alert("Process ID is required for allocation.");
+      return;
+    }
+  
     try {
-      let backendStrategy = strategy.replace("_", "");
-
-      const res = await allocateMemory(pid, size, backendStrategy);
-      if (!res.memory) {
-        alert(res.error || "Allocation failed.");
+      const res = await allocateMemory(pid, size, strategy.replace("_", ""));
+  
+      console.log("📦 Allocate response:", res);
+  
+      if (res.status === "sucess") {
+        navigate(`/process/${pid}`);
+      }
+  
+      const memoryRes = await fetch("http://localhost:8000/memory");
+      const memoryData = await memoryRes.json();
+      const match = memoryData.memory?.find((block: string) => block.includes(pid));
+  
+      if (match) {
+        alert("⚠️ Allocation succeeded, but backend reported failure.\nProceeding anyway.");
+        navigate(`/process/${pid}`);
+      } else {
+        alert(res.error || res.reason || "❌ Allocation failed.");
       }
     } catch (err) {
-      console.error(err);
-      alert("Something went wrong during allocation.");
+      console.error("🚨 Allocation crashed:", err);
+      alert("Something went wrong while allocating memory. Please check backend/server status.");
     }
   };
 
   const handleDeallocate = async () => {
+    if (!pid.trim()) {
+      alert("Process ID is required for deallocation.");
+      return;
+    }
     try {
       const res = await deallocateMemory(pid);
-      if (!res.memory) {
+      if (res.status !== "success") {
         alert(res.reason || "Deallocation failed.");
       }
     } catch (err) {
@@ -98,26 +154,43 @@ function App() {
     }
   };
 
-  const chartData = {
-    labels: blocks.map((b) => b.label),
-    datasets: [
-      {
-        data: blocks.map((b) => b.value),
-        backgroundColor: blocks.map((b) => b.color),
-        borderWidth: 1,
-      },
-    ],
+  const handleDownloadCSV = () => {
+    const headers = "Start,End,Size,Status,PID\n";
+    const rows = blocks.map(block => {
+      const parts = block.label.split(" ");
+      const [start, end] = parts[0].replace('[', '').replace(']', '').split('-');
+      const isFree = parts[1] === "Free";
+      const pid = isFree ? "-" : parts[1];
+      const status = isFree ? "Free" : "Used";
+      return `${start},${end},${block.value},${status},${pid}`;
+    }).join("\n");
+    const blob = new Blob([headers + rows], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "memory_process_table.csv";
+    a.click();
+  };
+
+  const totalMemory = blocks.reduce((sum, b) => sum + b.value, 0);
+  const usedMemory = blocks.filter(b => b.color !== '#6ee7b7').reduce((sum, b) => sum + b.value, 0);
+  const usedPercent = totalMemory > 0 ? ((usedMemory / totalMemory) * 100).toFixed(1) : "0";
+  const freeMemory = totalMemory - usedMemory;
+  const processCount = blocks.filter(b => b.color !== '#6ee7b7').length;
+
+  const toggleDarkMode = () => {
+    document.documentElement.classList.toggle("dark");
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 p-6 flex flex-col items-center gap-4">
-      <h1 className="text-3xl font-bold text-blue-600">Memory Allocator</h1>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white p-6 flex flex-col items-center gap-6">
+      <h1 className="text-4xl font-bold text-blue-600 dark:text-blue-400 drop-shadow-md">Memory Allocator</h1>
 
-      <div className="text-sm font-medium text-gray-600">
+      <div className="text-sm font-medium">
         {realtimeConnected ? "🟢 Real-time sync active" : "🔴 No real-time sync"}
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap justify-center gap-2">
         <input className="p-2 border rounded" placeholder="PID" value={pid} onChange={(e) => setPid(e.target.value)} />
         <input className="p-2 border rounded" type="number" placeholder="Size" value={size} onChange={(e) => setSize(Number(e.target.value))} />
         <select className="p-2 border rounded" value={strategy} onChange={(e) => setStrategy(e.target.value)}>
@@ -125,66 +198,67 @@ function App() {
           <option value="best_fit">Best Fit</option>
           <option value="worst_fit">Worst Fit</option>
         </select>
-        <button className="bg-blue-500 text-white px-4 py-2 rounded" onClick={handleAllocate}>Allocate</button>
-        <button className="bg-red-500 text-white px-4 py-2 rounded" onClick={handleDeallocate}>Deallocate</button>
-        <button className="bg-green-500 text-white px-4 py-2 rounded" onClick={handleSuggest}>Suggest Strategy</button>
+        <button className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded shadow" onClick={handleAllocate}>Allocate</button>
+        <button className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded shadow" onClick={handleDeallocate}>Deallocate</button>
+        <button className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded shadow" onClick={handleSuggest}>Suggest Strategy</button>
+        <button className="bg-gray-800 hover:bg-gray-700 text-white px-4 py-2 rounded shadow" onClick={toggleDarkMode}>Toggle Dark</button>
+        <button className="bg-yellow-400 hover:bg-yellow-500 text-black px-4 py-2 rounded shadow" onClick={handleDownloadCSV}>Download Table</button>
+        <button
+          className="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded shadow"
+          onClick={() => {
+            if (pid) {
+              window.location.href = `/log/${pid}`;
+            } else {
+              alert("Enter a PID to view its log.");
+            }
+          }}
+        >
+          View Log
+        </button>
       </div>
 
-      <div className="w-full max-w-2xl flex gap-1 mt-6">
+      <div className="w-full max-w-3xl grid grid-cols-12 gap-1 mt-8">
         <AnimatePresence mode="popLayout">
           {blocks.map((block, index) => (
             <motion.div
               key={block.label + index}
-              initial={{ opacity: 0, width: 0 }}
-              animate={{ opacity: 1, width: block.value * 2 }}
-              exit={{ opacity: 0, width: 0 }}
-              transition={{ duration: 0.4, type: "spring", bounce: 0.3 }}
-              className="text-xs text-center text-white rounded overflow-hidden"
-              style={{
-                backgroundColor: block.color,
-                padding: '5px 0'
-              }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="col-span-1 text-xs text-center text-white rounded shadow-sm"
+              style={{ width: `${block.value * 5}px`, backgroundColor: block.color, padding: '6px 2px' }}
             >
-              {block.label}
+              <span title={block.label}>{block.label}</span>
             </motion.div>
           ))}
         </AnimatePresence>
       </div>
 
-      <MemoryChart data={chartData} />
+      <div className="w-full max-w-2xl mt-6">
+        <MemoryChart data={{
+          labels: blocks.map((b) => b.label),
+          datasets: [
+            {
+              data: blocks.map((b) => b.value),
+              backgroundColor: blocks.map((b) => b.color),
+              borderWidth: 1,
+            },
+          ]
+        }} />
+      </div>
 
-      {blocks.length > 0 && (
-        <div className="mt-8 w-full max-w-2xl bg-white rounded shadow p-4">
-          <h2 className="text-xl font-semibold mb-4 text-gray-700">Memory Table</h2>
-          <table className="w-full text-sm border">
-            <thead>
-              <tr className="bg-gray-200">
-                <th className="border px-2 py-1">Start</th>
-                <th className="border px-2 py-1">End</th>
-                <th className="border px-2 py-1">Size</th>
-                <th className="border px-2 py-1">Status</th>
-                <th className="border px-2 py-1">PID</th>
-              </tr>
-            </thead>
-            <tbody>
-              {blocks.map((block, index) => {
-                const parts = block.label.split(" ");
-                const [start, end] = parts[0].replace("[", "").replace("]", "").split("-").map(Number);
-                const isFree = parts[1] === "Free";
-                return (
-                  <tr key={index} className={isFree ? "bg-green-50" : "bg-red-50"}>
-                    <td className="border px-2 py-1">{start}</td>
-                    <td className="border px-2 py-1">{end}</td>
-                    <td className="border px-2 py-1">{block.value}</td>
-                    <td className="border px-2 py-1">{isFree ? "Free" : "Used"}</td>
-                    <td className="border px-2 py-1">{isFree ? "-" : parts[1]}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+      <div className="w-full max-w-2xl mt-4 bg-white dark:bg-gray-800 p-4 rounded shadow-md">
+        <h2 className="text-lg font-semibold mb-2">📊 Memory Usage Stats</h2>
+        <div className="w-full bg-gray-300 rounded-full h-4 overflow-hidden mb-2">
+          <div
+            className="h-4 bg-blue-500"
+            style={{ width: `${usedPercent}%` }}
+          ></div>
         </div>
-      )}
+        <p><strong>Used:</strong> {usedMemory} / {totalMemory} ({usedPercent}%)</p>
+        <p><strong>Free:</strong> {freeMemory}</p>
+        <p><strong>Processes:</strong> {processCount}</p>
+      </div>
     </div>
   );
 }

@@ -2,7 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+/* custom styles */
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+body:not(.dark) {
   background-color: #f0f4f8;
 }

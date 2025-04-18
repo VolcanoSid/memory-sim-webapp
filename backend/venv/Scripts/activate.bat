@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\Users\Assus\memory-allocation-simulator\backend\venv
+set VIRTUAL_ENV=C:\Users\Assus\OneDrive\Desktop\memory-sim-webapp\memory-sim-webapp\backend\venv
 
 if not defined PROMPT set PROMPT=$P$G
 

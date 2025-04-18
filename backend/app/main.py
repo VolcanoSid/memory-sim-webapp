@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List
 
-from .logic import allocate, deallocate
+from .logic import allocate, deallocate, get_memory_state
 
 try:
     from .ai_module import suggest_strategy
@@ -13,9 +13,10 @@ except ImportError:
 
 app = FastAPI()
 
+# CORS: Allow all origins (adjust in prod)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,6 +33,10 @@ class ProcessRequest(BaseModel):
 def read_root():
     return {"message": "Memory Allocation API is working"}
 
+@app.get("/memory")
+async def get_memory_state_api():
+    return get_memory_state()
+
 @app.post("/suggest-strategy")
 def get_suggestion(size: int):
     if not ai_enabled:
@@ -41,19 +46,18 @@ def get_suggestion(size: int):
 
 @app.post("/allocate")
 async def allocate_memory(req: ProcessRequest, background_tasks: BackgroundTasks):
-    strategy = req.strategy.strip().lower().replace(" ", "").replace("-", "")
+    normalized = req.strategy.strip().lower().replace(" ", "").replace("-", "").replace("_", "")
 
-    if strategy == "firstfit":
-        normalized = "first_fit"
-    elif strategy == "bestfit":
-        normalized = "best_fit"
-    elif strategy == "worstfit":
-        normalized = "worst_fit"
-    else:
+    if normalized not in ["firstfit", "bestfit", "worstfit"]:
         raise HTTPException(status_code=400, detail=f"Unknown strategy: {req.strategy}")
 
     result = allocate(req.pid, req.size, normalized)
-    background_tasks.add_task(broadcast_update, result)
+
+    print("📦 ALLOCATION RESULT:", result)
+
+    if result["status"] == "success":
+        background_tasks.add_task(broadcast_update, get_memory_state())
+
     return result
 
 @app.delete("/deallocate/{pid}")
@@ -61,19 +65,35 @@ async def deallocate_memory(pid: str, background_tasks: BackgroundTasks):
     result = deallocate(pid)
     if result["status"] == "failed":
         raise HTTPException(status_code=404, detail=result["reason"])
-    background_tasks.add_task(broadcast_update, result)
+
+    background_tasks.add_task(broadcast_update, get_memory_state())
     return result
 
-# WebSocket route
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     clients.append(websocket)
+    print("🟢 WebSocket connection open")
+
     try:
+        await websocket.send_json(get_memory_state())
+
         while True:
-            await websocket.receive_text()  
+            message = await websocket.receive_text()
+
+            if message == "ping":
+                # ✅ Keep-alive response
+                await websocket.send_json(get_memory_state())
+            else:
+                print(f"⚠️ Unknown WebSocket message received: {message}")
     except WebSocketDisconnect:
-        clients.remove(websocket)
+        print("🔴 WebSocket disconnected")
+        if websocket in clients:
+            clients.remove(websocket)
+    except Exception as e:
+        print(f"🔥 WebSocket error: {e}")
+        if websocket in clients:
+            clients.remove(websocket)
 
 async def broadcast_update(memory_state: dict):
     disconnected = []
@@ -84,3 +104,9 @@ async def broadcast_update(memory_state: dict):
             disconnected.append(client)
     for dc in disconnected:
         clients.remove(dc)
+
+@app.get("/process-log/{pid}")
+async def get_process_log(pid: str):
+    from .logic import allocation_log
+    entries = [entry for entry in allocation_log if entry["pid"] == pid]
+    return {"log": entries}

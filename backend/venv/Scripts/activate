@@ -35,7 +35,7 @@ deactivate () {
 # unset irrelevant variables
 deactivate nondestructive
 
-VIRTUAL_ENV="C:\Users\Assus\memory-allocation-simulator\backend\venv"
+VIRTUAL_ENV="C:\Users\Assus\OneDrive\Desktop\memory-sim-webapp\memory-sim-webapp\backend\venv"
 export VIRTUAL_ENV
 
 _OLD_VIRTUAL_PATH="$PATH"

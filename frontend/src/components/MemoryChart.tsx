@@ -1,25 +1,58 @@
 import React from "react";
-import { Doughnut } from "react-chartjs-2";
-import { Chart, ArcElement, Tooltip, Legend } from "chart.js";
+import { Bar } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  BarElement,
+  CategoryScale,
+  LinearScale,
+  Tooltip,
+  Legend
+} from "chart.js";
 
-// Register chart.js modules
-Chart.register(ArcElement, Tooltip, Legend);
+ChartJS.register(BarElement, CategoryScale, LinearScale, Tooltip, Legend);
 
-const data = {
-  labels: ["Used", "Free"],
-  datasets: [
-    {
-      data: [60, 40], // Example values, update dynamically as needed
-      backgroundColor: ["#3b82f6", "#d1d5db"], // blue and gray
-      hoverOffset: 4,
+interface MemoryChartProps {
+  data: {
+    labels: string[];
+    datasets: {
+      data: number[];
+      backgroundColor: string[];
+      borderWidth: number;
+    }[];
+  };
+}
+
+const MemoryChart: React.FC<MemoryChartProps> = ({ data }) => {
+  const options = {
+    responsive: true,
+    plugins: {
+      legend: {
+        display: false,
+      },
     },
-  ],
-};
+    scales: {
+      x: {
+        stacked: true,
+        ticks: {
+          autoSkip: false,
+        },
+      },
+      y: {
+        stacked: true,
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: 'Memory Units',
+        },
+      },
+    },
+  };
 
-export default function MemoryChart() {
   return (
-    <div className="w-64 h-64 mt-4 bg-white rounded p-4 shadow">
-      <Doughnut data={data} />
+    <div className="w-full max-w-4xl mt-10">
+      <Bar data={data} options={options} />
     </div>
   );
-}
+};
+
+export default MemoryChart;
